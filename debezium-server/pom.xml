@@ -23,6 +23,7 @@
         <module>debezium-server-dist</module>
         <module>debezium-server-kafka</module>
         <module>debezium-server-pravega</module>
+        <module>debezium-server-nats-streaming</module>
     </modules>
 
     <dependencyManagement>

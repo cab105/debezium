@@ -9,7 +9,6 @@ import java.sql.SQLException;
 import java.util.List;
 import java.util.stream.Collectors;
 
-import org.apache.kafka.connect.errors.ConnectException;
 import org.apache.kafka.connect.source.SourceRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -73,16 +72,11 @@ public class SqlServerConnectorTask extends BaseSourceTask<SqlServerPartition, S
         final Configuration jdbcConfig = config.filter(
                 x -> !(x.startsWith(DatabaseHistory.CONFIGURATION_FIELD_PREFIX_STRING) || x.equals(HistorizedRelationalDatabaseConnectorConfig.DATABASE_HISTORY.name())))
                 .subset("database.", true);
-        dataConnection = new SqlServerConnection(jdbcConfig, clock, connectorConfig.getSourceTimestampMode(), valueConverters, () -> getClass().getClassLoader(),
-                connectorConfig.getSkippedOperations());
-        metadataConnection = new SqlServerConnection(jdbcConfig, clock, connectorConfig.getSourceTimestampMode(), valueConverters, () -> getClass().getClassLoader(),
-                connectorConfig.getSkippedOperations());
-        try {
-            dataConnection.setAutoCommit(false);
-        }
-        catch (SQLException e) {
-            throw new ConnectException(e);
-        }
+        dataConnection = new SqlServerConnection(jdbcConfig, connectorConfig.getSourceTimestampMode(), valueConverters, () -> getClass().getClassLoader(),
+                connectorConfig.getSkippedOperations(), connectorConfig.isMultiPartitionModeEnabled());
+        metadataConnection = new SqlServerConnection(jdbcConfig, connectorConfig.getSourceTimestampMode(), valueConverters, () -> getClass().getClassLoader(),
+                connectorConfig.getSkippedOperations(), connectorConfig.isMultiPartitionModeEnabled());
+
         this.schema = new SqlServerDatabaseSchema(connectorConfig, valueConverters, topicSelector, schemaNameAdjuster);
         this.schema.initializeStorage();
 

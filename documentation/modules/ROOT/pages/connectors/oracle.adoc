@@ -4,6 +4,7 @@
 = {prodname} Connector for Oracle
 
 :context: oracle
+:mbean-name: {context}
 ifdef::community[]
 :toc:
 :toc-placement: macro
@@ -192,7 +193,7 @@ The following example shows a typical schema change message in JSON format:
       "lcr_position" : null
     },
     "databaseName": "ORCLPDB1", // <1>
-    "schemaName": "DEBEZIUM", // 
+    "schemaName": "DEBEZIUM", //
     "ddl": "CREATE TABLE \"DEBEZIUM\".\"CUSTOMERS\" \n   (    \"ID\" NUMBER(9,0) NOT NULL ENABLE, \n    \"FIRST_NAME\" VARCHAR2(255), \n    \"LAST_NAME" VARCHAR2(255), \n    \"EMAIL\" VARCHAR2(255), \n     PRIMARY KEY (\"ID\") ENABLE, \n     SUPPLEMENTAL LOG DATA (ALL) COLUMNS\n   ) SEGMENT CREATION IMMEDIATE \n  PCTFREE 10 PCTUSED 40 INITRANS 1 MAXTRANS 255 \n NOCOMPRESS LOGGING\n  STORAGE(INITIAL 65536 NEXT 1048576 MINEXTENTS 1 MAXEXTENTS 2147483645\n  PCTINCREASE 0 FREELISTS 1 FREELIST GROUPS 1\n  BUFFER_POOL DEFAULT FLASH_CACHE DEFAULT CELL_FLASH_CACHE DEFAULT)\n  TABLESPACE \"USERS\" ", // <2>
     "tableChanges": [ // <3>
       {
@@ -531,10 +532,10 @@ The payload section of every change event value produced by the Oracle connector
 `op`:: A mandatory field that contains a string value describing the type of operation. Values for the Oracle connector are `c` for create (or insert), `u` for update, `d` for delete, and `r` for read (in the case of a snapshot).
 `before`:: An optional field that, if present, contains the state of the row _before_ the event occurred. The structure is described by the `server1.INVENTORY.CUSTOMERS.Value` Kafka Connect schema, which the `server1` connector uses for all rows in the `inventory.customers` table.
 
-[WARNING]
-====
-Whether or not this field and its elements are available is highly dependent on the https://docs.oracle.com/database/121/SUTIL/GUID-D2DDD67C-E1CC-45A6-A2A7-198E4C142FA3.htm#SUTIL1583[Supplemental Logging] configuration applying to the table.
-====
+// [WARNING]
+// ====
+// Whether or not this field and its elements are available is highly dependent on the https://docs.oracle.com/database/121/SUTIL/GUID-D2DDD67C-E1CC-45A6-A2A7-198E4C142FA3.htm#SUTIL1583[Supplemental Logging] configuration applying to the table.
+// ====
 
 `after`:: An optional field that if present contains the state of the row _after_ the event occurred. The structure is described by the same `server1.INVENTORY.CUSTOMERS.Value` Kafka Connect schema used in `before`.
 `source`:: A mandatory field that contains a structure describing the source metadata for the event, which in the case of Oracle contains these fields: the {prodname} version, the connector name, whether the event is part of an ongoing snapshot or not, the transaction id (not while snapshotting), the SCN of the change, and a timestamp representing the point in time when the record was changed in the source database (during snapshotting, this is the point in time of snapshotting).
@@ -1658,7 +1659,7 @@ Optionally, you can ignore, mask, or truncate columns that contain sensitive dat
 [source,json,indent=0,subs="+quotes"]
 ----
 {
-    "name": "inventory-connector",  // <`>`
+    "name": "inventory-connector",  // <1>
     "config": {
         "connector.class" : "io.debezium.connector.oracle.OracleConnector",  // <2>
         "database.hostname" : "<ORACLE_IP_ADDRESS>",  // <3>
@@ -2239,7 +2240,29 @@ To capture large object values and serialized them in change events, set this op
 |[[oracle-property-rac-nodes]]<<oracle-property-rac-nodes, `+rac.nodes+`>>
 |No default
 |A comma-separated list of Oracle Real Application Clusters (RAC) node host names or addresses.
-This field is required to enable use with Oracle RAC.
+This field is required to enable Oracle RAC support.
+Specify the list of RAC nodes by using one of the following methods:
+
+* Specify a value for xref:oracle-property-database-port[`database.port`], and use the specified port value for each address in the `rac.nodes` list.
+For example:
++
+[source,properties]
+----
+database.port=1521
+rac.nodes=192.168.1.100,192.168.1.101
+----
+
+* Specify a value for xref:oracle-property-database-port[`database.port`], and override the default port for one or more entries in the list.
+The list can include entries that use the default `database.port` value, and entries that define their own unique port values.
+For example:
++
+[source,properties]
+----
+database.port=1521
+rac.nodes=192.168.1.100,192.168.1.101:1522
+----
+
+If you supply a raw JDBC URL for the database by using the xref:oracle-property-database-url[`database.url`] property, instead of defining a value for `database.port`, each RAC node entry must explicitly specify a port value.
 
 |[[oracle-property-skipped-operations]]<<oracle-property-skipped-operations, `+skipped.operations+`>>
 |No default
@@ -2285,7 +2308,6 @@ Please refer to the {link-prefix}:{link-debezium-monitoring}#monitoring-debezium
 === Snapshot Metrics
 
 [[oracle-monitoring-snapshots]]
-The *MBean* is `debezium.oracle:type=connector-metrics,context=snapshot,server=_<database.server.name>_`.
 
 include::{partialsdir}/modules/all-connectors/ref-connector-monitoring-snapshot-metrics.adoc[leveloffset=+1]
 
@@ -2298,7 +2320,6 @@ include::{partialsdir}/modules/all-connectors/ref-connector-monitoring-increment
 === Streaming Metrics
 
 [[oracle-monitoring-streaming]]
-The *MBean* is `debezium.oracle:type=connector-metrics,context=streaming,server=_<database.server.name>_`.
 
 include::{partialsdir}/modules/all-connectors/ref-connector-monitoring-streaming-metrics.adoc[leveloffset=+1]
 
@@ -2531,7 +2552,6 @@ This should always be `0`; however when allowing unparsable DDL to be skipped, t
 === Schema History Metrics
 
 [[oracle-monitoring-schema-history]]
-The *MBean* is `debezium.oracle:type=connector-metrics,context=schema-history,server=_<database.server.name>_`.
 
 include::{partialsdir}/modules/all-connectors/ref-connector-monitoring-schema-history-metrics.adoc[leveloffset=+1]
 
@@ -2840,6 +2860,12 @@ END;
 /
 exit;
 ----
+
+[NOTE]
+====
+When setting up an XStream Outbound Server to capture changes from a pluggable database,
+the `source_container_name` parameter should be provided specifying the pluggable database name.
+====
 
 .Configure the XStream user account to connect to the XStream Outbound Server
 [source,indent=0]

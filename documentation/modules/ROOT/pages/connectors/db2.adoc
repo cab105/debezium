@@ -4,6 +4,7 @@
 = {prodname} connector for Db2
 
 :context: db2
+:mbean-name: {context}
 ifdef::community[]
 
 :toc:
@@ -2081,7 +2082,7 @@ Heartbeat messages are useful when there are many updates in a database that is 
 |
 |Controls which table rows are included in snapshots. This property affects snapshots only. It does not affect events that the connector reads from the log. Specify a comma-separated list of fully-qualified table names in the form _schemaName.tableName_. +
  +
-For each table that you specify, also specify another configuration property: `snapshot.select.statement.overrides._SCHEMA_NAME_._TABLE_NAME_`. For example: `snapshot.select.statement.overrides.customers.orders`. Set this property to a `SELECT` statement that obtains only the rows that you want in the snapshot. When the connector performs a snapshot, it executes this `SELECT` statement to retrieve data from that table. +
+For each table that you specify, also specify another configuration property: `snapshot.select.statement.overrides._SCHEMA_NAME_._TABLE_NAME_`. For example: `snapshot.select.statement.overrides.inventory.orders`. Set this property to a `SELECT` statement that obtains only the rows that you want in the snapshot. When the connector performs a snapshot, it executes this `SELECT` statement to retrieve data from that table. +
  +
 A possible use case for setting these properties is large, append-only tables. You can specify a `SELECT` statement that sets a specific point for where to start a snapshot, or where to resume a snapshot if a previous snapshot was interrupted.
 
@@ -2138,8 +2139,6 @@ The {prodname} Db2 connector provides three types of metrics that are in additio
 [[db2-snapshot-metrics]]
 === Snapshot metrics
 
-The *MBean* is `debezium.db2:type=connector-metrics,context=snapshot,server=_<database.server.name>_`.
-
 include::{partialsdir}/modules/all-connectors/ref-connector-monitoring-snapshot-metrics.adoc[leveloffset=+1]
 
 include::{partialsdir}/modules/all-connectors/ref-connector-monitoring-incremental-snapshot-metrics.adoc[leveloffset=+1]
@@ -2150,8 +2149,6 @@ include::{partialsdir}/modules/all-connectors/ref-connector-monitoring-increment
 [[db2-streaming-metrics]]
 === Streaming metrics
 
-The *MBean* is `debezium.db2:type=connector-metrics,context=streaming,server=_<database.server.name>_`.
-
 include::{partialsdir}/modules/all-connectors/ref-connector-monitoring-streaming-metrics.adoc[leveloffset=+1]
 
 // Type: reference
@@ -2159,8 +2156,6 @@ include::{partialsdir}/modules/all-connectors/ref-connector-monitoring-streaming
 // Title: Monitoring {prodname} Db2 connector schema history
 [[db2-schema-history-metrics]]
 === Schema history metrics
-
-The *MBean* is `debezium.db2:type=connector-metrics,context=schema-history,server=_<database.server.name>_`.
 
 include::{partialsdir}/modules/all-connectors/ref-connector-monitoring-schema-history-metrics.adoc[leveloffset=+1]
 
@@ -2242,7 +2237,7 @@ You stop the {prodname} Db2 connector before you perform an offline schema updat
 . Stop the {prodname} connector.
 . Apply all changes to the source table schema.
 . In the ASN register table, mark the tables with updated schemas as `INACTIVE`.
-. {link-prefix}:{link-db2-connector}#debezium-db2-reinitialize-asn-service[Reinitialize the ASN capture service.
+. {link-prefix}:{link-db2-connector}#debezium-db2-reinitialize-asn-service[Reinitialize the ASN capture service].
 . Remove the source table with the old schema from capture mode by {link-prefix}:{link-db2-connector}#debezium-db2-remove-capture-mode[running the {prodname} UDF for removing tables from capture mode].
 . Add the source table with the new schema to capture mode by {link-prefix}:{link-db2-connector}#debezium-db2-put-capture-mode[running the {prodname} UDF for adding tables to capture mode].
 . In the ASN register table, mark the updated source tables as `ACTIVE`.

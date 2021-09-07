@@ -238,8 +238,12 @@ public class SqlServerConnectorIT extends AbstractConnectorTest {
                         "SELECT (SELECT transaction_id FROM sys.dm_tran_session_transactions AS t WHERE s.session_id=t.session_id) FROM sys.dm_exec_sessions AS s WHERE program_name='"
                                 + appId + "'",
                         rs -> {
-                            rs.next();
-                            txIds.add(rs.getLong(1));
+                            while (rs.next()) {
+                                final long txId = rs.getLong(1);
+                                if (txId != 0) {
+                                    txIds.add(txId);
+                                }
+                            }
                         });
                 return txIds.size() > 2;
             });
@@ -751,21 +755,21 @@ public class SqlServerConnectorIT extends AbstractConnectorTest {
 
         Awaitility.await().atMost(30, TimeUnit.SECONDS).until(() -> {
             // Wait for max lsn to be available
-            if (!connection.getMaxLsn().isAvailable()) {
+            if (!connection.getMaxLsn(TestHelper.TEST_DATABASE).isAvailable()) {
                 return false;
             }
 
             // verify pre-snapshot inserts have succeeded
             Map<String, Boolean> resultMap = new HashMap<>();
-            connection.listOfChangeTables().forEach(ct -> {
+            connection.listOfChangeTables(TestHelper.TEST_DATABASE).forEach(ct -> {
                 final String tableName = ct.getChangeTableId().table();
                 if (tableName.endsWith("dbo_" + tableaCT) || tableName.endsWith("dbo_" + tablebCT)) {
                     try {
-                        final Lsn minLsn = connection.getMinLsn(tableName);
-                        final Lsn maxLsn = connection.getMaxLsn();
+                        final Lsn minLsn = connection.getMinLsn(TestHelper.TEST_DATABASE, tableName);
+                        final Lsn maxLsn = connection.getMaxLsn(TestHelper.TEST_DATABASE);
                         SqlServerChangeTable[] tables = Collections.singletonList(ct).toArray(new SqlServerChangeTable[]{});
                         final List<Integer> ids = new ArrayList<>();
-                        connection.getChangesForTables(tables, minLsn, maxLsn, resultsets -> {
+                        connection.getChangesForTables(TestHelper.TEST_DATABASE, tables, minLsn, maxLsn, resultsets -> {
                             final ResultSet rs = resultsets[0];
                             while (rs.next()) {
                                 ids.add(rs.getInt("id"));
@@ -1224,21 +1228,23 @@ public class SqlServerConnectorIT extends AbstractConnectorTest {
 
     @Test
     @FixFor("DBZ-3505")
-    public void shouldFailOnInvalidColumnFilter() throws Exception {
+    public void shouldHandleInvalidColumnFilter() throws Exception {
         final Configuration config = TestHelper.defaultConfig()
                 .with(SqlServerConnectorConfig.COLUMN_INCLUDE_LIST, ".^")
                 .build();
         final LogInterceptor logInterceptor = new LogInterceptor();
 
         start(SqlServerConnector.class, config);
-        waitForConnectorShutdown("sql_server", "server1");
+        assertConnectorIsRunning();
 
-        consumeRecord();
-        Awaitility.await()
-                .alias("Found error message in logs")
-                .atMost(TestHelper.waitTimeForRecords(), TimeUnit.SECONDS)
-                .until(() -> logInterceptor.containsStacktraceElement("Filtered column list for table testDB.dbo.tablea is empty")
-                        && !engine.isRunning());
+        // Wait for snapshot completion
+        consumeRecordsByTopic(1);
+
+        // should be no more records
+        assertNoRecordsToConsume();
+
+        final String message = "All columns in table testDB.dbo.tablea were excluded due to include/exclude lists, defaulting to selecting all columns";
+        stopConnector(value -> assertThat(logInterceptor.containsMessage(message)).isTrue());
     }
 
     @Test
@@ -2077,7 +2083,7 @@ public class SqlServerConnectorIT extends AbstractConnectorTest {
 
         Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(100, TimeUnit.MILLISECONDS).until(() -> {
             Testing.debug("Waiting for initial changes to be propagated to CDC structures");
-            return connection.getMaxLsn().isAvailable();
+            return connection.getMaxLsn(TestHelper.TEST_DATABASE).isAvailable();
         });
 
         start(SqlServerConnector.class, config);
