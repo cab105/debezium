@@ -26,24 +26,27 @@ import io.debezium.connector.oracle.logminer.processor.infinispan.marshalling.Vi
 public class Transaction {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(Transaction.class);
+    private static final String UNKNOWN = "UNKNOWN";
 
-    private String transactionId;
-    private Scn startScn;
-    private Instant changeTime;
-    private List<LogMinerEvent> events;
-    private Set<Long> hashes;
+    private final String transactionId;
+    private final Scn startScn;
+    private final Instant changeTime;
+    private final List<LogMinerEvent> events;
+    private final Set<Long> hashes;
+    private final String userName;
 
     @VisibleForMarshalling
-    public Transaction(String transactionId, Scn startScn, Instant changeTime, List<LogMinerEvent> events, Set<Long> hashes) {
+    public Transaction(String transactionId, Scn startScn, Instant changeTime, List<LogMinerEvent> events, Set<Long> hashes, String userName) {
         this.transactionId = transactionId;
         this.startScn = startScn;
         this.changeTime = changeTime;
         this.events = events;
         this.hashes = hashes;
+        this.userName = !UNKNOWN.equalsIgnoreCase(userName) ? userName : null;
     }
 
-    public Transaction(String transactionId, Scn startScn, Instant changeTime) {
-        this(transactionId, startScn, changeTime, new ArrayList<>(), new HashSet<>());
+    public Transaction(String transactionId, Scn startScn, Instant changeTime, String userName) {
+        this(transactionId, startScn, changeTime, new ArrayList<>(), new HashSet<>(), userName);
     }
 
     public String getTransactionId() {
@@ -81,6 +84,10 @@ public class Transaction {
         });
     }
 
+    public String getUserName() {
+        return userName;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {
@@ -103,6 +110,7 @@ public class Transaction {
         return "Transaction{" +
                 "transactionId='" + transactionId + '\'' +
                 ", startScn=" + startScn +
-                '}';
+                ", userName='" + userName +
+                "'}";
     }
 }

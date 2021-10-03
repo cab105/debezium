@@ -346,6 +346,13 @@ In the following example, the `payload` field contains the key:
 
 {prodname} can generate events that represent transaction metadata boundaries and that enrich data change event messages.
 
+[NOTE]
+.Limits on when {prodname} receives transaction metadata
+====
+{prodname} registers and receives metadata only for transactions that occur after you deploy the connector.
+Metadata for transactions that occur before you deploy the connector is not available.
+====
+
 Database transactions are represented by a statement block that is enclosed between the `BEGIN` and `END` keywords.
 {prodname} generates transaction boundary events for the `BEGIN` and `END` delimiters in every transaction.
 Transaction boundary events contain the following fields:
@@ -1288,7 +1295,6 @@ sqlplus sys/top_secret@//localhost:1521/ORCLCDB as sysdba
 
   GRANT CREATE TABLE TO c##dbzuser CONTAINER=ALL;
   GRANT LOCK ANY TABLE TO c##dbzuser CONTAINER=ALL;
-  GRANT ALTER ANY TABLE TO c##dbzuser CONTAINER=ALL;
   GRANT CREATE SEQUENCE TO c##dbzuser CONTAINER=ALL;
 
   GRANT EXECUTE ON DBMS_LOGMNR TO c##dbzuser CONTAINER=ALL;
@@ -1923,11 +1929,33 @@ You can set the following values:
 
 |[[oracle-property-snapshot-select-statement-overrides]]<<oracle-property-snapshot-select-statement-overrides, `+snapshot.select.statement.overrides+`>>
 |No default
-|Specifies the table rows to include in a snapshot. +
-This property contains a comma-separated list of fully-qualified tables (`__<schema_name.table_name>__`).
-Select statements for the individual tables are specified in further configuration properties, one for each table, identified by the id `snapshot.select.statement.overrides.[_<schema_name>_].[_<table_name>_]`.
-The value of those properties is the `SELECT` statement to use when retrieving data from the specific table during snapshotting. _A possible use case for large append-only tables is setting a specific point where to start (resume) snapshotting, in case a previous snapshotting was interrupted._ +
-*Note*: This setting affects snapshots only. It does not apply to events that the connector captures during log reading.
+|Specifies the table rows to include in a snapshot.
+Use the property if you want a snapshot to include only a subset of the rows in a table.
+This property affects snapshots only.
+It does not apply to events that the connector reads from the log.
+
+The property contains a comma-separated list of fully-qualified table names in the form `_<schemaName>.<tableName>_`. For example, +
+ +
+`+"snapshot.select.statement.overrides": "inventory.products,customers.orders"+` +
+ +
+For each table in the list, add a further configuration property that specifies the `SELECT` statement for the connector to run on the table when it takes a snapshot.
+The specified `SELECT` statement determines the subset of table rows to include in the snapshot.
+Use the following format to specify the name of this `SELECT` statement property: +
+ +
+`snapshot.select.statement.overrides._<schemaName>_._<tableName>_`.
+For example,
+`snapshot.select.statement.overrides.customers.orders`. +
+ +
+Example:
+
+From a `customers.orders` table that includes the soft-delete column, `delete_flag`, add the following properties if you want a snapshot to include only those records that are not soft-deleted:
+
+----
+"snapshot.select.statement.overrides": "customer.orders",
+"snapshot.select.statement.overrides.customer.orders": "SELECT * FROM [customers].[orders] WHERE delete_flag = 0 ORDER BY id DESC"
+----
+
+In the resulting snapshot, the connector includes only the records for which `delete_flag = 0`.
 
 |[[oracle-property-schema-include-list]]<<oracle-property-schema-include-list, `+schema.include.list+`>>
 |No default
@@ -2143,7 +2171,7 @@ The infinispan option requires that you specify a cache file directory.
 Use the `log.mining.buffer.location` property to define the location for storing cache files.
 
 |[[oracle-property-log-mining-buffer-location]]<<oracle-property-log-mining-buffer-location, `+log.mining.buffer.location+`>>
-|
+|No default
 |Specifies the location of the directory that the connector uses to read and write the buffer cache.
 Specify a directory that every node in the Kafka cluster can access and that is unique for the connector deployment.
 
@@ -2203,6 +2231,11 @@ In contrast to redo logs, archive logs are guaranteed to be reliable.
 Set this option to `true` to force the connector to mine archive logs only.
 After you set the connector to mine only the archive logs, the latency between an operation being committed and the connector emitting an associated change event might increase.
 The degree of latency depends on how frequently the database is configured to archive online redo logs.
+
+|[[oracle-property-log-mining-archive-log-only-scn-poll-interval-ms]]<<oracle-property-log-mining-archive-log-only-scn-poll-interval-ms, `+log.mining.archive.log.only.scn.poll.interval.ms+`>>
+|`10000`
+|The number of milliseconds the connector will sleep in between polling to determine if the starting system change number is in the archive logs.
+If `log.mining.archive.log.only.mode` is not enabled, this setting is not used.
 
 |[[oracle-property-log-mining-transaction-retention-hours]]<<oracle-property-log-mining-transaction-retention-hours, `log.mining.transaction.retention.hours`>>
 |`0`

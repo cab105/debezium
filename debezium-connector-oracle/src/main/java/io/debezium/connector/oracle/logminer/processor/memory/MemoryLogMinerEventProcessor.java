@@ -102,6 +102,7 @@ public class MemoryLogMinerEventProcessor extends AbstractLogMinerEventProcessor
         counters.reset();
 
         try (PreparedStatement statement = createQueryStatement()) {
+            LOGGER.debug("Fetching results for SCN [{}, {}]", startScn, endScn);
             statement.setFetchSize(getConfig().getMaxQueueSize());
             statement.setFetchDirection(ResultSet.FETCH_FORWARD);
             statement.setString(1, startScn.toString());
@@ -215,6 +216,15 @@ public class MemoryLogMinerEventProcessor extends AbstractLogMinerEventProcessor
             return;
         }
 
+        boolean skipExcludedUserName = false;
+        if (transaction.getUserName() == null && !transaction.getEvents().isEmpty()) {
+            LOGGER.debug("Got transaction with null username {}", transaction);
+        }
+        else if (getConfig().getLogMiningUsernameExcludes().contains(transaction.getUserName())) {
+            LOGGER.trace("Skipping transaction with excluded username {}", transaction);
+            skipExcludedUserName = true;
+        }
+
         final Scn smallestScn = transactionCache.getMinimumScn();
         metrics.setOldestScn(smallestScn.isNull() ? Scn.valueOf(-1) : smallestScn);
         abandonedTransactionsCache.remove(transactionId);
@@ -259,19 +269,21 @@ public class MemoryLogMinerEventProcessor extends AbstractLogMinerEventProcessor
 
             // after reconciliation all events should be DML
             final DmlEvent dmlEvent = (DmlEvent) event;
-            dispatcher.dispatchDataChangeEvent(event.getTableId(),
-                    new LogMinerChangeRecordEmitter(
-                            partition,
-                            offsetContext,
-                            dmlEvent.getEventType(),
-                            dmlEvent.getDmlEntry().getOldValues(),
-                            dmlEvent.getDmlEntry().getNewValues(),
-                            getSchema().tableFor(event.getTableId()),
-                            Clock.system()));
+            if (!skipExcludedUserName) {
+                dispatcher.dispatchDataChangeEvent(event.getTableId(),
+                        new LogMinerChangeRecordEmitter(
+                                partition,
+                                offsetContext,
+                                dmlEvent.getEventType(),
+                                dmlEvent.getDmlEntry().getOldValues(),
+                                dmlEvent.getDmlEntry().getNewValues(),
+                                getSchema().tableFor(event.getTableId()),
+                                Clock.system()));
+            }
         }
 
         lastCommittedScn = Scn.valueOf(commitScn.longValue());
-        if (!transaction.getEvents().isEmpty()) {
+        if (!transaction.getEvents().isEmpty() && !skipExcludedUserName) {
             dispatcher.dispatchTransactionCommittedEvent(partition, offsetContext);
         }
         else {
@@ -346,6 +358,12 @@ public class MemoryLogMinerEventProcessor extends AbstractLogMinerEventProcessor
             return offsetContext.getScn();
         }
         else {
+            if (!getLastProcessedScn().isNull() && getLastProcessedScn().compareTo(endScn) < 0) {
+                // If the last processed SCN is before the endScn we need to use the last processed SCN as the
+                // next starting point as the LGWR buffer didn't flush all entries from memory to disk yet.
+                endScn = getLastProcessedScn();
+            }
+
             if (transactionCache.isEmpty()) {
                 offsetContext.setScn(endScn);
                 dispatcher.dispatchHeartbeatEvent(partition, offsetContext);

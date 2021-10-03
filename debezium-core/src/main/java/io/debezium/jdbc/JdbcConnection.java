@@ -76,6 +76,7 @@ public class JdbcConnection implements AutoCloseable {
     private static final char STATEMENT_DELIMITER = ';';
     private static final int STATEMENT_CACHE_CAPACITY = 10_000;
     private final static Logger LOGGER = LoggerFactory.getLogger(JdbcConnection.class);
+    private static final int CONNECTION_VALID_CHECK_TIMEOUT_IN_SEC = 3;
     private final Map<String, PreparedStatement> statementCache = new BoundedConcurrentHashMap<>(STATEMENT_CACHE_CAPACITY, 16, Eviction.LIRS,
             new EvictionListener<String, PreparedStatement>() {
 
@@ -875,6 +876,10 @@ public class JdbcConnection implements AutoCloseable {
             return false;
         }
         return !conn.isClosed();
+    }
+
+    public synchronized boolean isValid() throws SQLException {
+        return isConnected() && conn.isValid(CONNECTION_VALID_CHECK_TIMEOUT_IN_SEC);
     }
 
     public synchronized Connection connection() throws SQLException {

@@ -2039,6 +2039,43 @@ table_compression
     | NOCOMPRESS
     ;
 
+inmemory_table_clause
+    : INMEMORY inmemory_attributes inmemory_columns_clause
+    | NO INMEMORY inmemory_columns_clause
+    ;
+
+inmemory_attributes
+    : inmemory_memcompress? inmemory_priority? inmemory_distribute? inmemory_duplicate?
+    ;
+
+inmemory_memcompress
+    : MEMCOMPRESS FOR (DML | (QUERY|CAPACITY) (LOW|HIGH)?)
+    | NO MEMCOMPRESS
+    ;
+
+inmemory_priority
+    : PRIORITY (NONE|LOW|MEDIUM|HIGH|CRITICAL)
+    ;
+
+inmemory_distribute
+    : DISTRIBUTE
+        (AUTO | BY (ROWID RANGE|PARTITION|SUBPARTITION))?
+        (FOR SERVICE (DEFAULT|ALL|service_name|NONE))?
+    ;
+
+inmemory_duplicate
+    : DUPLICATE ALL?
+    | NO DUPLICATE
+    ;
+
+inmemory_columns_clause
+    : inmemory_column_clause*
+    ;
+
+inmemory_column_clause
+    : (INMEMORY inmemory_memcompress?|NO INMEMORY) '(' column_name (',' column_name)* ')'
+    ;
+
 physical_attributes_clause
     : (PCTFREE pctfree=UNSIGNED_INTEGER
       | PCTUSED pctused=UNSIGNED_INTEGER
@@ -2093,7 +2130,7 @@ external_table_data_props
     ;
 
 physical_properties
-    : deferred_segment_creation?  segment_attributes_clause table_compression?
+    : deferred_segment_creation? inmemory_table_clause? segment_attributes_clause table_compression?
     | deferred_segment_creation? (
         ORGANIZATION (
             (HEAP segment_attributes_clause? heap_org_table_clause) |
@@ -2101,6 +2138,7 @@ physical_properties
             (EXTERNAL external_table_clause)) |
         EXTERNAL PARTITION ATTRIBUTES external_table_clause (REJECT LIMIT)?
         )
+    | CLUSTER cluster_name '(' column_name (',' column_name)* ')'
     ;
 
 row_movement_clause
@@ -2165,7 +2203,7 @@ upgrade_table_clause
     ;
     
 truncate_table
-    : TRUNCATE TABLE tableview_name PURGE? SEMICOLON
+    : TRUNCATE TABLE tableview_name PURGE? ((DROP ALL?|REUSE) STORAGE)? CASCADE? SEMICOLON
     ;
 
 drop_table
@@ -2590,13 +2628,25 @@ split_table_partition
     ;
 
 truncate_table_partition
-    : TRUNCATE PARTITION partition_name
+    : TRUNCATE (partition_extended_names|subpartition_extended_names)
     ;
 
 exchange_table_partition
     : EXCHANGE PARTITION partition_name WITH TABLE tableview_name
             ((INCLUDING|EXCLUDING) INDEXES)?
             ((WITH | WITHOUT) VALIDATION)?
+    ;
+
+partition_extended_names
+    : (PARTITION|PARTITIONS) partition_name
+    | (PARTITION|PARTITIONS) '(' partition_name (',' partition_name)* ')'
+    | (PARTITION|PARTITIONS) FOR '('? partition_key_value (',' partition_key_value)* ')'?
+    ;
+
+subpartition_extended_names
+    : (SUBPARTITION|SUBPARTITIONS) partition_name (UPDATE INDEXES)?
+    | (SUBPARTITION|SUBPARTITIONS) '(' partition_name (',' partition_name)* ')'
+    | (SUBPARTITION|SUBPARTITIONS) FOR '('? subpartition_key_value (',' subpartition_key_value)* ')'?
     ;
 
 alter_iot_clauses
@@ -4350,6 +4400,10 @@ collection_name
     ;
 
 link_name
+    : identifier
+    ;
+
+service_name
     : identifier
     ;
 
@@ -6651,6 +6705,7 @@ non_reserved_keywords_pre12c
     | TIMEOUT
     | TIMES
     | TIMESTAMP
+    | TIMEZONE
     | TIMEZONE_ABBR
     | TIMEZONE_HOUR
     | TIMEZONE_MINUTE

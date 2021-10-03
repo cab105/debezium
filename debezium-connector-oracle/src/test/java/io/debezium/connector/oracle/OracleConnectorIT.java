@@ -14,11 +14,14 @@ import static junit.framework.TestCase.assertEquals;
 import static org.fest.assertions.Assertions.assertThat;
 import static org.fest.assertions.MapAssert.entry;
 
+import java.lang.management.ManagementFactory;
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -27,12 +30,17 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
+import javax.management.JMException;
+import javax.management.MBeanServer;
+import javax.management.ObjectName;
+
 import org.apache.kafka.connect.data.Field;
 import org.apache.kafka.connect.data.Schema;
 import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.source.SourceRecord;
 import org.awaitility.Awaitility;
 import org.awaitility.Durations;
+import org.awaitility.core.ConditionTimeoutException;
 import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.BeforeClass;
@@ -2114,6 +2122,180 @@ public class OracleConnectorIT extends AbstractConnectorTest {
         finally {
             TestHelper.dropTable(connection, "dbz3898");
         }
+    }
+
+    @Test
+    @FixFor("DBZ-3712")
+    public void shouldStartWithArchiveLogOnlyModeAndStreamWhenRecordsBecomeAvailable() throws Exception {
+        TestHelper.dropTable(connection, "dbz3712");
+        try {
+            connection.execute("CREATE TABLE dbz3712 (id number(9,0), data varchar2(50))");
+            TestHelper.streamTable(connection, "dbz3712");
+
+            Configuration config = TestHelper.defaultConfig()
+                    .with(OracleConnectorConfig.LOG_MINING_ARCHIVE_LOG_ONLY_MODE, true)
+                    .with(OracleConnectorConfig.LOG_MINING_ARCHIVE_LOG_ONLY_SCN_POLL_INTERVAL_MS, 2000)
+                    .with(OracleConnectorConfig.TABLE_INCLUDE_LIST, "DEBEZIUM\\.DBZ3712")
+                    .build();
+
+            start(OracleConnector.class, config);
+            assertConnectorIsRunning();
+            waitForStreamingRunning(TestHelper.CONNECTOR_NAME, TestHelper.SERVER_NAME);
+
+            // At this point the connector is new and should not emit any records as the SCN offset
+            // obtained from the snapshot is in the redo logs.
+            waitForAvailableRecords(waitTimeForRecords(), TimeUnit.SECONDS);
+            assertNoRecordsToConsume();
+
+            // We will insert a new record but this record won't be emitted right away and will
+            // require that a log switch happen so that it can be emitted.
+            connection.execute("INSERT INTO dbz3712 (id,data) values (1, 'Test')");
+            waitForLogSwitchOrForceOneAfterTimeout();
+
+            // We should now be able to consume a record
+            SourceRecords records = consumeRecordsByTopic(1);
+            assertThat(records.recordsForTopic("server1.DEBEZIUM.DBZ3712")).hasSize(1);
+        }
+        finally {
+            TestHelper.dropTable(connection, "dbz3712");
+        }
+    }
+
+    @Test
+    @FixFor("DBZ-3712")
+    public void shouldPermitChangingToArchiveLogOnlyModeOnExistingConnector() throws Exception {
+        TestHelper.dropTable(connection, "dbz3712");
+        try {
+            connection.execute("CREATE TABLE dbz3712 (id number(9,0), data varchar2(50))");
+            TestHelper.streamTable(connection, "dbz3712");
+
+            Configuration config = TestHelper.defaultConfig()
+                    .with(OracleConnectorConfig.LOG_MINING_ARCHIVE_LOG_ONLY_SCN_POLL_INTERVAL_MS, 2000)
+                    .with(OracleConnectorConfig.TABLE_INCLUDE_LIST, "DEBEZIUM\\.DBZ3712")
+                    .build();
+
+            start(OracleConnector.class, config);
+            assertConnectorIsRunning();
+            waitForStreamingRunning(TestHelper.CONNECTOR_NAME, TestHelper.SERVER_NAME);
+
+            // The connector was started with archive.log.only.mode disabled so this record should
+            // be emitted immediately once its written to the redo logs.
+            connection.execute("INSERT INTO dbz3712 (id,data) values (1, 'Test1')");
+
+            // We should now be able to consume a record
+            SourceRecords records = consumeRecordsByTopic(1);
+            assertThat(records.recordsForTopic("server1.DEBEZIUM.DBZ3712")).hasSize(1);
+
+            // Restart connector using the same offsets but with archive log only mode
+            stopConnector();
+
+            config = TestHelper.defaultConfig()
+                    .with(OracleConnectorConfig.LOG_MINING_ARCHIVE_LOG_ONLY_MODE, true)
+                    .with(OracleConnectorConfig.LOG_MINING_ARCHIVE_LOG_ONLY_SCN_POLL_INTERVAL_MS, 2000)
+                    .with(OracleConnectorConfig.TABLE_INCLUDE_LIST, "DEBEZIUM\\.DBZ3712")
+                    .build();
+
+            start(OracleConnector.class, config);
+            assertConnectorIsRunning();
+            waitForStreamingRunning(TestHelper.CONNECTOR_NAME, TestHelper.SERVER_NAME);
+
+            // At this point the connector was restarted with archive log only mode. The SCN offset
+            // was previously in the redo logs and may likely not be in the archive logs on start so
+            // we'll give the connector a moment and verify it has no records to consume.
+            waitForAvailableRecords(waitTimeForRecords(), TimeUnit.SECONDS);
+            assertNoRecordsToConsume();
+
+            // Insert a new record
+            // This should not be picked up until after a log switch
+            connection.execute("INSERT INTO dbz3712 (id,data) values (2, 'Test2')");
+            waitForLogSwitchOrForceOneAfterTimeout();
+
+            // We should now be able to consume a record
+            records = consumeRecordsByTopic(1);
+            assertThat(records.recordsForTopic("server1.DEBEZIUM.DBZ3712")).hasSize(1);
+
+            // Insert a new record
+            // This should not be picked up until after a log switch
+            connection.execute("INSERT INTO dbz3712 (id,data) values (3, 'Test2')");
+            waitForLogSwitchOrForceOneAfterTimeout();
+
+            // We should now be able to consume a record
+            records = consumeRecordsByTopic(1);
+            assertThat(records.recordsForTopic("server1.DEBEZIUM.DBZ3712")).hasSize(1);
+        }
+        finally {
+            TestHelper.dropTable(connection, "dbz3712");
+        }
+    }
+
+    private void waitForLogSwitchOrForceOneAfterTimeout() throws SQLException {
+        List<BigInteger> sequences = TestHelper.getCurrentRedoLogSequences();
+        try {
+            Awaitility.await()
+                    .pollInterval(Duration.of(5, ChronoUnit.SECONDS))
+                    .atMost(Duration.of(20, ChronoUnit.SECONDS))
+                    .until(() -> {
+                        if (TestHelper.getCurrentRedoLogSequences().equals(sequences)) {
+                            assertNoRecordsToConsume();
+                            return false;
+                        }
+                        // Oracle triggered its on log switch
+                        return true;
+                    });
+
+            // In this use case Oracle triggered its own log switch
+            // We don't need to trigger one on our own.
+        }
+        catch (ConditionTimeoutException e) {
+            // expected if Oracle doesn't trigger its own log switch
+            TestHelper.forceLogfileSwitch();
+        }
+    }
+
+    @Test
+    @FixFor("DBZ-3978")
+    public void shouldFilterUser() throws Exception {
+        try {
+            TestHelper.dropTable(connection, "dbz3978");
+
+            connection.execute("CREATE TABLE dbz3978 (id number(9,0), data varchar2(50), primary key (id))");
+            TestHelper.streamTable(connection, "dbz3978");
+
+            Configuration config = TestHelper.defaultConfig()
+                    .with(OracleConnectorConfig.TABLE_INCLUDE_LIST, "DEBEZIUM\\.DBZ3978")
+                    .with(OracleConnectorConfig.SNAPSHOT_MODE, SnapshotMode.SCHEMA_ONLY)
+                    .with(OracleConnectorConfig.LOG_MINING_USERNAME_EXCLUDE_LIST, "DEBEZIUM")
+                    .build();
+
+            start(OracleConnector.class, config);
+            assertConnectorIsRunning();
+
+            waitForStreamingRunning(TestHelper.CONNECTOR_NAME, TestHelper.SERVER_NAME);
+
+            connection.executeWithoutCommitting("INSERT INTO debezium.dbz3978 VALUES (1, 'Test1')");
+            connection.executeWithoutCommitting("INSERT INTO debezium.dbz3978 VALUES (2, 'Test2')");
+            connection.execute("COMMIT");
+
+            // all messages are filtered out
+            assertThat(waitForAvailableRecords(10, TimeUnit.SECONDS)).isFalse();
+
+            // There should be at least 2 DML events captured but ignored
+            Long totalDmlCount = getStreamingMetric("TotalCapturedDmlCount");
+            assertThat(totalDmlCount).isGreaterThanOrEqualTo(2L);
+
+        }
+        finally {
+            TestHelper.dropTable(connection, "dbz3978");
+        }
+
+    }
+
+    @SuppressWarnings("unchecked")
+    private <T> T getStreamingMetric(String metricName) throws JMException {
+        final MBeanServer mbeanServer = ManagementFactory.getPlatformMBeanServer();
+
+        final ObjectName objectName = getStreamingMetricsObjectName(TestHelper.CONNECTOR_NAME, TestHelper.SERVER_NAME);
+        return (T) mbeanServer.getAttribute(objectName, metricName);
     }
 
     private String generateAlphaNumericStringColumn(int size) {
