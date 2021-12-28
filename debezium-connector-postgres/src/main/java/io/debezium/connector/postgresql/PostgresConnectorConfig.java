@@ -369,6 +369,11 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
             public boolean supportsTruncate() {
                 return true;
             }
+
+            @Override
+            public boolean supportsLogicalDecodingMessage() {
+                return true;
+            }
         },
         DECODERBUFS("decoderbufs") {
             @Override
@@ -383,6 +388,11 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
 
             @Override
             public boolean supportsTruncate() {
+                return false;
+            }
+
+            @Override
+            public boolean supportsLogicalDecodingMessage() {
                 return false;
             }
         },
@@ -409,6 +419,11 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
 
             @Override
             public boolean sendsNullToastedValuesInOld() {
+                return false;
+            }
+
+            @Override
+            public boolean supportsLogicalDecodingMessage() {
                 return false;
             }
         },
@@ -442,6 +457,11 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
             public boolean sendsNullToastedValuesInOld() {
                 return false;
             }
+
+            @Override
+            public boolean supportsLogicalDecodingMessage() {
+                return false;
+            }
         },
         WAL2JSON("wal2json") {
             @Override
@@ -467,6 +487,11 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
             @Override
             public boolean sendsNullToastedValuesInOld() {
                 return false;
+            }
+
+            @Override
+            public boolean supportsLogicalDecodingMessage() {
+                return true;
             }
         },
         WAL2JSON_RDS("wal2json_rds") {
@@ -497,6 +522,11 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
 
             @Override
             public boolean sendsNullToastedValuesInOld() {
+                return false;
+            }
+
+            @Override
+            public boolean supportsLogicalDecodingMessage() {
                 return false;
             }
         };
@@ -533,6 +563,8 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
         public abstract String getPostgresPluginName();
 
         public abstract boolean supportsTruncate();
+
+        public abstract boolean supportsLogicalDecodingMessage();
     }
 
     /**
@@ -893,6 +925,33 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
                     "When 'snapshot.mode' is set as custom, this setting must be set to specify a fully qualified class name to load (via the default class loader)."
                             + "This class must implement the 'Snapshotter' interface and is called on each app boot to determine whether to do a snapshot and how to build queries.");
 
+    /**
+     * A comma-separated list of regular expressions that match the prefix of logical decoding messages to be excluded
+     * from monitoring. Must not be used with {@link #LOGICAL_DECODING_MESSAGE_PREFIX_INCLUDE_LIST}
+     */
+    public static final Field LOGICAL_DECODING_MESSAGE_PREFIX_EXCLUDE_LIST = Field.create("message.prefix.exclude.list")
+            .withDisplayName("Exclude Logical Decoding Message Prefixes")
+            .withType(Type.LIST)
+            .withGroup(Field.createGroupEntry(Field.Group.CONNECTOR, 25))
+            .withWidth(Width.LONG)
+            .withImportance(Importance.MEDIUM)
+            .withValidation(Field::isListOfRegex, PostgresConnectorConfig::validateLogicalDecodingMessageExcludeList)
+            .withDescription("A comma-separated list of regular expressions that match the logical decoding message prefixes to be excluded from monitoring.");
+
+    /**
+     * A comma-separated list of regular expressions that match the prefix of logical decoding messages to be monitored.
+     * Must not be used with {@link #LOGICAL_DECODING_MESSAGE_PREFIX_EXCLUDE_LIST}
+     */
+    public static final Field LOGICAL_DECODING_MESSAGE_PREFIX_INCLUDE_LIST = Field.create("message.prefix.include.list")
+            .withDisplayName("Include Logical Decoding Message Prefixes")
+            .withType(Type.LIST)
+            .withGroup(Field.createGroupEntry(Field.Group.CONNECTOR, 24))
+            .withWidth(Width.LONG)
+            .withImportance(Importance.MEDIUM)
+            .withValidation(Field::isListOfRegex)
+            .withDescription(
+                    "A comma-separated list of regular expressions that match the logical decoding message prefixes to be monitored. All prefixes are monitored by default.");
+
     public static final Field TRUNCATE_HANDLING_MODE = Field.create("truncate.handling.mode")
             .withDisplayName("Truncate handling mode")
             .withGroup(Field.createGroupEntry(Field.Group.CONNECTOR, 23))
@@ -1013,6 +1072,7 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
             .withDescription("Number of fractional digits when money type is converted to 'precise' decimal number.");
 
     private final TruncateHandlingMode truncateHandlingMode;
+    private final LogicalDecodingMessageFilter logicalDecodingMessageFilter;
     private final HStoreHandlingMode hStoreHandlingMode;
     private final IntervalHandlingMode intervalHandlingMode;
     private final SnapshotMode snapshotMode;
@@ -1028,6 +1088,8 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
                 ColumnFilterMode.SCHEMA);
 
         this.truncateHandlingMode = TruncateHandlingMode.parse(config.getString(PostgresConnectorConfig.TRUNCATE_HANDLING_MODE));
+        this.logicalDecodingMessageFilter = new LogicalDecodingMessageFilter(config.getString(LOGICAL_DECODING_MESSAGE_PREFIX_INCLUDE_LIST),
+                config.getString(LOGICAL_DECODING_MESSAGE_PREFIX_EXCLUDE_LIST));
         String hstoreHandlingModeStr = config.getString(PostgresConnectorConfig.HSTORE_HANDLING_MODE);
         this.hStoreHandlingMode = HStoreHandlingMode.parse(hstoreHandlingModeStr);
         this.intervalHandlingMode = IntervalHandlingMode.parse(config.getString(PostgresConnectorConfig.INTERVAL_HANDLING_MODE));
@@ -1089,6 +1151,10 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
 
     public TruncateHandlingMode truncateHandlingMode() {
         return truncateHandlingMode;
+    }
+
+    public LogicalDecodingMessageFilter getMessageFilter() {
+        return logicalDecodingMessageFilter;
     }
 
     protected HStoreHandlingMode hStoreHandlingMode() {
@@ -1183,7 +1249,9 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
                     SCHEMA_REFRESH_MODE,
                     TRUNCATE_HANDLING_MODE,
                     INCREMENTAL_SNAPSHOT_CHUNK_SIZE,
-                    UNAVAILABLE_VALUE_PLACEHOLDER)
+                    UNAVAILABLE_VALUE_PLACEHOLDER,
+                    LOGICAL_DECODING_MESSAGE_PREFIX_INCLUDE_LIST,
+                    LOGICAL_DECODING_MESSAGE_PREFIX_EXCLUDE_LIST)
             .excluding(INCLUDE_SCHEMA_CHANGES)
             .create();
 
@@ -1241,6 +1309,18 @@ public class PostgresConnectorConfig extends RelationalDatabaseConnectorConfig {
             LOGGER.warn("Configuration property '{}' is deprecated and will be removed in future versions. Please use '{}' instead.",
                     TOASTED_VALUE_PLACEHOLDER.name(),
                     UNAVAILABLE_VALUE_PLACEHOLDER.name());
+        }
+        return 0;
+    }
+
+    private static int validateLogicalDecodingMessageExcludeList(Configuration config, Field field, Field.ValidationOutput problems) {
+        String includeList = config.getString(LOGICAL_DECODING_MESSAGE_PREFIX_INCLUDE_LIST);
+        String excludeList = config.getString(LOGICAL_DECODING_MESSAGE_PREFIX_EXCLUDE_LIST);
+
+        if (includeList != null && excludeList != null) {
+            problems.accept(LOGICAL_DECODING_MESSAGE_PREFIX_EXCLUDE_LIST, excludeList,
+                    "\"logical_decoding_message.prefix.include.list\" is already specified");
+            return 1;
         }
         return 0;
     }

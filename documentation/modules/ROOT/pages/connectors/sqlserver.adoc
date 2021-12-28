@@ -5,6 +5,7 @@
 = {prodname} connector for SQL Server
 
 :context: sqlserver
+:data-collection: table
 :mbean-name: sql_server
 ifdef::community[]
 
@@ -133,6 +134,11 @@ From this baseline state, the connector captures subsequent changes as they occu
 
 include::{partialsdir}/modules/all-connectors/ref-connector-incremental-snapshot.adoc[leveloffset=+3]
 
+[WARNING]
+====
+The {prodname} connector for SQL Server does not support schema changes while an incremental snapshot is running.
+====
+
 // Type: concept
 // ModuleID: how-the-debezium-sql-server-connector-reads-change-data-tables
 // Title: How {prodname} SQL Server connectors read change data tables
@@ -151,6 +157,14 @@ This sorting order ensures that the changes are replayed by {prodname} in the sa
 After a restart, the connector resumes processing from the last offset (commit and change LSNs) that it read.
 
 The connector is able to detect whether CDC is enabled or disabled for included source tables and adjust its behavior.
+
+// Type: concept
+// ModuleID: limitations-sql-server-connector
+// Title: Limitations of {prodname} SQL Server connector
+=== Limitations
+
+SQL Server specifically requires the base object to be a table in order to create a change capture instance.
+As consequence, capturing changes from indexed views (aka. materialized views) is not supported by SQL Server and hence {prodname} SQL Server connector.
 
 // Type: concept
 // ModuleID: default-names-of-kafka-topics-that-receive-debezium-sql-server-change-event-records
@@ -1649,7 +1663,7 @@ To deploy a {prodname} SQL Server connector, you install the {prodname} SQL Serv
 
 .Prerequisites
 * link:https://zookeeper.apache.org/[Apache ZooKeeper], link:http://kafka.apache.org/[Apache Kafka], and link:{link-kafka-docs}.html#connect[Kafka Connect] are installed.
-* SQL Server is installed, is {link-prefix}:{link-sqlserver-connector}#setting-up-sqlserver[configured for CDC], and is ready to be used with the {prodname} connector].
+* SQL Server is installed, is {link-prefix}:{link-sqlserver-connector}#setting-up-sqlserver[configured for CDC], and is ready to be used with the {prodname} connector.
 
 .Procedure
 . Download the {prodname} https://repo1.maven.org/maven2/io/debezium/debezium-connector-sqlserver/{debezium-version}/debezium-connector-sqlserver-{debezium-version}-plugin.tar.gz[SQL Server connector plug-in archive]
@@ -2369,6 +2383,10 @@ The name format is _database_name.schema-name.table-name_.
  +
 Note that changes to a primary key are not supported and can cause incorrect results if performed during an incremental snapshot. Another limitation is that if a schema change affects only columns' default values, then the change won't be detected until the DDL is processed from the binlog stream. This doesn't affect the snapshot events' values, but the schema of snapshot events may have outdated defaults.
 
+|[[sqlserver-property-incremental-snapshot-chunk-size]]<<sqlserver-property-incremental-snapshot-chunk-size, `+incremental.snapshot.chunk.size+`>>
+|`1024`
+| The number of rows fetched from the database for each incremental snapshot iteration.
+
 |[[sqlserver-property-max-iteration-transactions]]<<sqlserver-property-max-iteration-transactions, `+max.iteration.transactions+`>>
 |0
 |Specifies the maximum number of transactions per iteration to be used to reduce the memory footprint when streaming changes from multiple tables in a database.
@@ -2467,7 +2485,7 @@ The procedure for completing an online schema updates is simpler than the proced
 and you can complete it without requiring any downtime in application and data processing.
 However, with online schema updates, a potential processing gap can occur after you update the schema in the source database,
 but before you create the new capture instance.
-During that interval, change events continue to be captured by the old instance of the change table, Q
+During that interval, change events continue to be captured by the old instance of the change table,
 and the change data that is saved to the old table retains the structure of the earlier schema.
 So, for example, if you added a new column to a source table, change events that are produced before the new capture table is ready, do not contain a field for the new column.
 If your application does not tolerate such a transition period, it is best to use the offline schema update procedure.

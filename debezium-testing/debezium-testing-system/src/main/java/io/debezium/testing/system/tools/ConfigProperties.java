@@ -25,13 +25,13 @@ public final class ConfigProperties {
     public static final long WAIT_SCALE_FACTOR = longProperty("test.wait.scale", 1);
 
     // DockerConfiguration configuration
-    public static final String DOCKER_IMAGE_KAFKA_RHEL = System.getProperty("test.docker.image.rhel.kafka");
+    public static final String DOCKER_IMAGE_KAFKA_RHEL = System.getProperty("test.docker.image.kc");
     public static final String DOCKER_IMAGE_MYSQL = System.getProperty("test.docker.image.mysql", "quay.io/debezium/example-mysql:latest");
     public static final String DOCKER_IMAGE_POSTGRESQL = System.getProperty("test.docker.image.postgresql", "quay.io/debezium/example-postgres:latest");
     public static final String DOCKER_IMAGE_MONGO = System.getProperty("test.docker.image.mongo", "quay.io/debezium/example-mongodb:latest");
     public static final String DOCKER_IMAGE_SQLSERVER = System.getProperty("test.docker.image.sqlserver", "mcr.microsoft.com/mssql/server:2019-latest");
     public static final String DOCKER_IMAGE_DB2 = System.getProperty("test.docker.image.db2", "quay.io/debezium/db2-cdc:latest");
-    public static final String DOCKER_IMAGE_ORACLE = System.getProperty("test.docker.image.oracle");
+    public static final String DOCKER_IMAGE_ORACLE = System.getProperty("test.docker.image.oracle", "quay.io/rh_integration/dbz-oracle:19.3.0");
 
     // OpenShift configuration
     public static final String OCP_URL = System.getProperty("test.ocp.url");

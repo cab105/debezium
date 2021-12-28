@@ -15,7 +15,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.PriorityQueue;
 import java.util.Queue;
-import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Matcher;
@@ -29,6 +28,7 @@ import io.debezium.connector.sqlserver.SqlServerConnectorConfig.SnapshotMode;
 import io.debezium.pipeline.ErrorHandler;
 import io.debezium.pipeline.EventDispatcher;
 import io.debezium.pipeline.source.spi.StreamingChangeEventSource;
+import io.debezium.relational.ChangeTable;
 import io.debezium.relational.Table;
 import io.debezium.relational.TableId;
 import io.debezium.schema.SchemaChangeEvent.SchemaChangeEventType;
@@ -126,7 +126,7 @@ public class SqlServerStreamingChangeEventSource implements StreamingChangeEvent
             final SqlServerStreamingExecutionContext streamingExecutionContext = streamingExecutionContexts.getOrDefault(partition,
                     new SqlServerStreamingExecutionContext(
                             new PriorityQueue<>((x, y) -> x.getStopLsn().compareTo(y.getStopLsn())),
-                            new AtomicReference<>(getCdcTablesToQuery(partition, offsetContext)),
+                            new AtomicReference<>(),
                             offsetContext.getChangePosition(),
                             new AtomicBoolean(false),
                             // LSN should be increased for the first run only immediately after snapshot completion
@@ -172,8 +172,8 @@ public class SqlServerStreamingChangeEventSource implements StreamingChangeEvent
                 while (!schemaChangeCheckpoints.isEmpty()) {
                     migrateTable(partition, schemaChangeCheckpoints, offsetContext);
                 }
-                if (!dataConnection.listOfNewChangeTables(databaseName, fromLsn, toLsn).isEmpty()) {
-                    final SqlServerChangeTable[] tables = getCdcTablesToQuery(partition, offsetContext);
+                if (!dataConnection.getNewChangeTables(databaseName, fromLsn, toLsn).isEmpty()) {
+                    final SqlServerChangeTable[] tables = getChangeTablesToQuery(partition, offsetContext, toLsn);
                     tablesSlot.set(tables);
                     for (SqlServerChangeTable table : tables) {
                         if (table.getStartLsn().isBetween(fromLsn, toLsn)) {
@@ -181,6 +181,9 @@ public class SqlServerStreamingChangeEventSource implements StreamingChangeEvent
                             schemaChangeCheckpoints.add(table);
                         }
                     }
+                }
+                if (tablesSlot.get() == null) {
+                    tablesSlot.set(getChangeTablesToQuery(partition, offsetContext, toLsn));
                 }
                 try {
                     dataConnection.getChangesForTables(databaseName, tablesSlot.get(), fromLsn, toLsn, resultSets -> {
@@ -326,7 +329,12 @@ public class SqlServerStreamingChangeEventSource implements StreamingChangeEvent
             throws InterruptedException, SQLException {
         final SqlServerChangeTable newTable = schemaChangeCheckpoints.poll();
         LOGGER.info("Migrating schema to {}", newTable);
+        Table oldTableSchema = schema.tableFor(newTable.getSourceTableId());
         Table tableSchema = metadataConnection.getTableSchemaFromTable(partition.getDatabaseName(), newTable);
+        if (oldTableSchema.equals(tableSchema)) {
+            LOGGER.info("Migration skipped, no table schema changes detected.");
+            return;
+        }
         dispatcher.dispatchSchemaChangeEvent(newTable.getSourceTableId(),
                 new SqlServerSchemaChangeEventEmitter(partition, offsetContext, newTable, tableSchema,
                         SchemaChangeEventType.ALTER));
@@ -340,21 +348,23 @@ public class SqlServerStreamingChangeEventSource implements StreamingChangeEvent
         if (m.matches() && m.group(1).equals(databaseName)) {
             final String captureName = m.group(2);
             LOGGER.info("Table is no longer captured with capture instance {}", captureName);
-            return Arrays.asList(currentChangeTables).stream()
+            return Arrays.stream(currentChangeTables)
                     .filter(x -> !x.getCaptureInstance().equals(captureName))
-                    .collect(Collectors.toList()).toArray(new SqlServerChangeTable[0]);
+                    .toArray(SqlServerChangeTable[]::new);
         }
         throw exception;
     }
 
-    private SqlServerChangeTable[] getCdcTablesToQuery(SqlServerPartition partition, SqlServerOffsetContext offsetContext) throws SQLException, InterruptedException {
+    private SqlServerChangeTable[] getChangeTablesToQuery(SqlServerPartition partition, SqlServerOffsetContext offsetContext,
+                                                          Lsn toLsn)
+            throws SQLException, InterruptedException {
         final String databaseName = partition.getDatabaseName();
-        final Set<SqlServerChangeTable> cdcEnabledTables = dataConnection.listOfChangeTables(databaseName);
-        if (cdcEnabledTables.isEmpty()) {
+        final List<SqlServerChangeTable> changeTables = dataConnection.getChangeTables(databaseName, toLsn);
+        if (changeTables.isEmpty()) {
             LOGGER.warn("No table has enabled CDC or security constraints prevents getting the list of change tables");
         }
 
-        final Map<TableId, List<SqlServerChangeTable>> includeListCdcEnabledTables = cdcEnabledTables.stream()
+        final Map<TableId, List<SqlServerChangeTable>> includeListChangeTables = changeTables.stream()
                 .filter(changeTable -> {
                     if (connectorConfig.getTableFilters().dataCollectionFilter().isIncluded(changeTable.getSourceTableId())) {
                         return true;
@@ -364,15 +374,15 @@ public class SqlServerStreamingChangeEventSource implements StreamingChangeEvent
                         return false;
                     }
                 })
-                .collect(Collectors.groupingBy(x -> x.getSourceTableId()));
+                .collect(Collectors.groupingBy(ChangeTable::getSourceTableId));
 
-        if (includeListCdcEnabledTables.isEmpty()) {
+        if (includeListChangeTables.isEmpty()) {
             LOGGER.warn(
                     "No whitelisted table has enabled CDC, whitelisted table list does not contain any table with CDC enabled or no table match the white/blacklist filter(s)");
         }
 
         final List<SqlServerChangeTable> tables = new ArrayList<>();
-        for (List<SqlServerChangeTable> captures : includeListCdcEnabledTables.values()) {
+        for (List<SqlServerChangeTable> captures : includeListChangeTables.values()) {
             SqlServerChangeTable currentTable = captures.get(0);
             if (captures.size() > 1) {
                 SqlServerChangeTable futureTable;

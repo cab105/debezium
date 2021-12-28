@@ -1129,7 +1129,15 @@ public class OracleBlobDataTypesIT extends AbstractConnectorTest {
             record = table.get(0);
             after = ((Struct) record.value()).getStruct(Envelope.FieldName.AFTER);
             assertThat(after.get("ID")).isEqualTo(3);
-            assertThat(after.get("DATA")).isNull();
+            if (logMinerAdapter) {
+                // With LogMiner, the first event only contains the initialization of id
+                assertThat(after.get("DATA")).isNull();
+            }
+            else {
+                // Xstream combines the insert and subsequent LogMiner update into a single insert event
+                // automatically, so we receive the value here where the LogMiner implementation doesn't.
+                assertThat(after.get("DATA")).isEqualTo(getByteBufferFromBlob(blob1));
+            }
             assertThat(((Struct) record.value()).get("op")).isEqualTo("c");
 
             // LogMiner will pickup a separate update for BLOB fields.
@@ -1144,14 +1152,179 @@ public class OracleBlobDataTypesIT extends AbstractConnectorTest {
                 assertThat(((Struct) record.value()).get("op")).isEqualTo("u");
             }
 
-            // the second insert won't emit an update due to the blob field being set by using the
-            // SELECT_LOB_LOCATOR, LOB_WRITE, and LOB_TRIM operators when using LogMiner and the
-            // BLOB field will be excluded automatically by Xstream due to skipping chunk processing.
             record = table.get(logMinerAdapter ? 2 : 1);
             after = ((Struct) record.value()).getStruct(Envelope.FieldName.AFTER);
             assertThat(after.get("ID")).isEqualTo(4);
-            assertThat(after.get("DATA")).isNull();
+            if (logMinerAdapter) {
+                // the second insert won't emit an update due to the clob field being set by using the
+                // SELECT_LOB_LOCATOR, LOB_WRITE, and LOB_TRIM operators when using LogMiner and the
+                assertThat(after.get("DATA")).isNull();
+            }
+            else {
+                // Xstream gets this value; it will be supplied.
+                assertThat(after.get("DATA")).isEqualTo(getByteBufferFromBlob(blob2));
+            }
             assertThat(((Struct) record.value()).get("op")).isEqualTo("c");
+
+            // Test updates with small blob values
+            Blob blob1u = createBlob(part(BIN_DATA, 5, 255));
+            connection.prepareQuery("UPDATE dbz3645 set data=? WHERE id = 3", ps -> ps.setBlob(1, blob1u), null);
+            connection.commit();
+
+            sourceRecords = consumeRecordsByTopic(1);
+            table = sourceRecords.recordsForTopic(topicName("DBZ3645"));
+            VerifyRecord.isValidUpdate(table.get(0), "ID", 3);
+
+            // When updating a table that contains a small BLOB value but the update does not modify
+            // any of the non-BLOB fields, we expect the placeholder in the before and the value in the after.
+            assertThat(getBeforeField(table.get(0), "DATA")).isEqualTo(getUnavailableValuePlaceholder(config));
+            assertThat(getAfterField(table.get(0), "DATA")).isEqualTo(getByteBufferFromBlob(blob1u));
+            assertNoRecordsToConsume();
+
+            // Test updates with large blob values
+            Blob blob2u = createBlob(part(BIN_DATA, 5, 10000));
+            connection.prepareQuery("UPDATE dbz3645 set data=? WHERE id = 4", ps -> ps.setBlob(1, blob2u), null);
+            connection.commit();
+
+            if (logMinerAdapter) {
+                // When updating a table that contains a large BLOB value but the update does not modify
+                // any of the non-BLOB fields, don't expect any events to be emitted. This is because
+                // the event is treated as a SELECT_LOB_LOCATOR and LOB_WRITE series which is ignored.
+                waitForAvailableRecords(5, TimeUnit.SECONDS);
+            }
+            else {
+                // Xstream actually picks up this particular event.
+                sourceRecords = consumeRecordsByTopic(1);
+                table = sourceRecords.recordsForTopic(topicName("DBZ3645"));
+                VerifyRecord.isValidUpdate(table.get(0), "ID", 4);
+                assertThat(getBeforeField(table.get(0), "DATA")).isEqualTo(getUnavailableValuePlaceholder(config));
+                assertThat(getAfterField(table.get(0), "DATA")).isEqualTo(getByteBufferFromBlob(blob2u));
+            }
+
+            assertNoRecordsToConsume();
+
+            // Test update small blob row by changing non-blob fields
+            connection.execute("UPDATE dbz3645 set id=5 where id=3");
+
+            // Get streaming records
+            // Expect 3 records: delete for ID=3, tombstone for ID=3, create for ID=5
+            sourceRecords = consumeRecordsByTopic(3);
+            table = sourceRecords.recordsForTopic(topicName("DBZ3645"));
+            VerifyRecord.isValidDelete(table.get(0), "ID", 3);
+            VerifyRecord.isValidTombstone(table.get(1), "ID", 3);
+            VerifyRecord.isValidInsert(table.get(2), "ID", 5);
+
+            // When updating a table that contains a small BLOB value but the update does not modify
+            // any of the BLOB fields, we expect the placeholder.
+            record = table.get(2);
+            after = ((Struct) record.value()).getStruct(Envelope.FieldName.AFTER);
+            assertThat(after.get("DATA")).isEqualTo(getUnavailableValuePlaceholder(config));
+            assertNoRecordsToConsume();
+
+            // Test update large blob row by changing non-blob fields
+            connection.execute("UPDATE dbz3645 set id=6 where id=4");
+
+            // Get streaming records
+            // Expect 3 records: delete for ID=4, tombstone for ID=4, create for ID=6
+            sourceRecords = consumeRecordsByTopic(3);
+            table = sourceRecords.recordsForTopic(topicName("DBZ3645"));
+            VerifyRecord.isValidDelete(table.get(0), "ID", 4);
+            VerifyRecord.isValidTombstone(table.get(1), "ID", 4);
+            VerifyRecord.isValidInsert(table.get(2), "ID", 6);
+
+            // When updating a table that contains a large BLOB value but the update does not modify
+            // any of the BLOB fields, we expect the placeholder.
+            assertThat(getBeforeField(table.get(0), "DATA")).isEqualTo(getUnavailableValuePlaceholder(config));
+            assertThat(getAfterField(table.get(2), "DATA")).isEqualTo(getUnavailableValuePlaceholder(config));
+            assertNoRecordsToConsume();
+
+            // Test updating both small blob and non-blob fields
+            Blob blob1u2 = createBlob(part(BIN_DATA, 10, 260));
+            connection.prepareQuery("UPDATE dbz3645 SET data=?, id=7 WHERE id=5", ps -> ps.setBlob(1, blob1u2), null);
+            connection.commit();
+
+            // Get streaming records
+            // The number of expected records depends on whether this test is using LogMiner or Xstream.
+            // LogMiner expects 4: delete for ID=5, tombstone for ID=5, create for ID=7, update for ID=7
+            // XStream expects 3: delete for ID=5, tombstone for ID=5, create for ID=7
+            //
+            // NOTE: The extra update event is because the BLOB value is treated inline and so LogMiner
+            // does not emit a SELECT_LOB_LOCATOR event but rather a subsequent update that is captured
+            // but not merged since event merging happens only when LOB is enabled.
+            sourceRecords = consumeRecordsByTopic(logMinerAdapter ? 4 : 3);
+            table = sourceRecords.recordsForTopic(topicName("DBZ3645"));
+            VerifyRecord.isValidDelete(table.get(0), "ID", 5);
+            VerifyRecord.isValidTombstone(table.get(1), "ID", 5);
+            VerifyRecord.isValidInsert(table.get(2), "ID", 7);
+
+            if (logMinerAdapter) {
+                VerifyRecord.isValidUpdate(table.get(3), "ID", 7);
+            }
+
+            // When updating a table's small blob and non-blob columns
+            assertThat(getBeforeField(table.get(0), "DATA")).isEqualTo(getUnavailableValuePlaceholder(config));
+            if (logMinerAdapter) {
+                assertThat(getAfterField(table.get(2), "DATA")).isEqualTo(getUnavailableValuePlaceholder(config));
+                assertThat(getBeforeField(table.get(3), "DATA")).isEqualTo(getUnavailableValuePlaceholder(config));
+                assertThat(getAfterField(table.get(3), "DATA")).isEqualTo(getByteBufferFromBlob(blob1u2));
+            }
+            else {
+                // Xstream combines the insert/update into a single insert
+                assertThat(getAfterField(table.get(2), "DATA")).isEqualTo(getByteBufferFromBlob(blob1u2));
+            }
+            assertNoRecordsToConsume();
+
+            // Test updating both large blob and non-blob fields
+            Blob blob2u2 = createBlob(part(BIN_DATA, 10, 12500));
+            connection.prepareQuery("UPDATE dbz3645 SET data=?, id=8 WHERE id=6", ps -> ps.setBlob(1, blob2u2), null);
+            connection.commit();
+
+            // Get streaming records
+            // Expect 3 records: delete for ID=6, tombstone for ID=6, create for ID=8
+            sourceRecords = consumeRecordsByTopic(3);
+            table = sourceRecords.recordsForTopic(topicName("DBZ3645"));
+            VerifyRecord.isValidDelete(table.get(0), "ID", 6);
+            VerifyRecord.isValidTombstone(table.get(1), "ID", 6);
+            VerifyRecord.isValidInsert(table.get(2), "ID", 8);
+
+            // When updating a table's large blob and non-blob columns, we expect placeholder in after
+            assertThat(getBeforeField(table.get(0), "DATA")).isEqualTo(getUnavailableValuePlaceholder(config));
+            if (logMinerAdapter) {
+                // LogMiner is unable to provide the value, so it gets emitted with the placeholder.
+                assertThat(getAfterField(table.get(2), "DATA")).isEqualTo(getUnavailableValuePlaceholder(config));
+            }
+            else {
+                // Xstream gets the value, so its provided.
+                assertThat(getAfterField(table.get(2), "DATA")).isEqualTo(getByteBufferFromBlob(blob2u2));
+            }
+            assertNoRecordsToConsume();
+
+            // Test deleting a row from a table with a small blob column
+            connection.execute("DELETE FROM dbz3645 WHERE id=7");
+
+            // Get streaming records
+            // Expect 2 records: delete for ID=6, tombstone for ID=6
+            sourceRecords = consumeRecordsByTopic(2);
+            table = sourceRecords.recordsForTopic(topicName("DBZ3645"));
+            VerifyRecord.isValidDelete(table.get(0), "ID", 7);
+            VerifyRecord.isValidTombstone(table.get(1), "ID", 7);
+
+            // when deleting, we expect placeholder
+            assertThat(getBeforeField(table.get(0), "DATA")).isEqualTo(getUnavailableValuePlaceholder(config));
+            assertNoRecordsToConsume();
+
+            // Test deleting a row from a table with a large blob column
+            connection.execute("DELETE FROM dbz3645 WHERE id=8");
+
+            // Get streaming records
+            // Expect 2 records: delete for ID=6, tombstone for ID=6
+            sourceRecords = consumeRecordsByTopic(2);
+            table = sourceRecords.recordsForTopic(topicName("DBZ3645"));
+            VerifyRecord.isValidDelete(table.get(0), "ID", 8);
+            VerifyRecord.isValidTombstone(table.get(1), "ID", 8);
+
+            // when deleting, we expect placeholder
+            assertThat(getBeforeField(table.get(0), "DATA")).isEqualTo(getUnavailableValuePlaceholder(config));
 
             // As a sanity, there should be no more records.
             assertNoRecordsToConsume();
@@ -1308,5 +1481,13 @@ public class OracleBlobDataTypesIT extends AbstractConnectorTest {
 
     private static ByteBuffer getUnavailableValuePlaceholder(Configuration config) {
         return ByteBuffer.wrap(config.getString(OracleConnectorConfig.UNAVAILABLE_VALUE_PLACEHOLDER).getBytes());
+    }
+
+    private static Object getBeforeField(SourceRecord record, String fieldName) {
+        return before(record).get(fieldName);
+    }
+
+    private static Object getAfterField(SourceRecord record, String fieldName) {
+        return after(record).get(fieldName);
     }
 }
